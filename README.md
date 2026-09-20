@@ -295,6 +295,23 @@ Contributions welcome. New adapters are the most useful kind — see
 - [ ] Per-device maintenance windows (suppress alerts during a planned change)
 - [ ] Config drift detection: alert when a device's running config diverges from its last backup
 
+<!-- support:start -->
+## Support the project
+
+**netpilot** is built and maintained in my own time, and it stays free to use
+and free to fork. If it saved you an outage — or just an afternoon — you can help
+fund the next round of test hardware and the time to add more vendors:
+
+**USDT (TRC20)**
+
+```text
+TMEyd1JZqdCjjKTc4zG2fhjzAYFKXCUWnA
+```
+
+This is the only address I publish for these projects. Anything else claiming to be
+me is not mine.
+<!-- support:end -->
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
