@@ -7,29 +7,55 @@ import os
 import sys
 
 from .main_window import MainWindow
+from .safety import (
+    install_crash_handler,
+    install_exception_hook,
+    install_logging,
+    write_fatal,
+)
 
 log = logging.getLogger("netpilot.desktop")
 
 
-def run_gui(data_dir: str | None = None, start_monitor: bool = True) -> int:
-    """Launch the desktop application. Returns the process exit code."""
-    # Before anything else: where do we write if this goes wrong?
-    from .safety import install_crash_handler, install_exception_hook, install_logging
+def prepare_runtime(data_dir: str | None = None):
+    """Everything that must be true before a window can exist.
 
+    Split out of :func:`run_gui` so it can be exercised where it actually has to work:
+    a build with no console, which is how the shippped desktop app starts on Windows.
+    Returns the log file path.
+    """
     log_file = install_logging(data_dir)
     install_crash_handler(data_dir)
     install_exception_hook(data_dir)
     log.info("netpilot desktop starting (data_dir=%s, log=%s)", data_dir, log_file)
+    return log_file
+
+
+def run_gui(data_dir: str | None = None, start_monitor: bool = True) -> int:
+    """Launch the desktop application. Returns the process exit code."""
+    try:
+        log_file = prepare_runtime(data_dir)
+    except Exception as exc:  # noqa: BLE001 - there is no window to report through yet
+        # Logging itself may be the thing that failed, so write the traceback by hand.
+        # Nothing above this line may be assumed to work.
+        path = write_fatal(exc, data_dir)
+        print(f"netpilot could not start: {exc!r}", file=sys.stderr or sys.stdout)
+        if path is not None:
+            print(f"the details are in {path}", file=sys.stderr or sys.stdout)
+        return 4
 
     try:
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QApplication, QMessageBox
     except ImportError as exc:  # pragma: no cover - depends on install extras
+        # A windowed build has no stderr at all, so do not assume one is there.
+        target = sys.stderr or sys.stdout
         print(
             'netpilot desktop needs PyQt6 — install it with: pip install "netpilot[gui]"',
-            file=sys.stderr,
+            file=target,
         )
-        print(f"({exc})", file=sys.stderr)
+        print(f"({exc})", file=target)
+        write_fatal(exc, data_dir)
         return 2
 
     from .bridge import CoreThread

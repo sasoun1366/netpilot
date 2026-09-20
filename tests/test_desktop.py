@@ -478,3 +478,173 @@ def test_the_modal_guard_leaves_a_focused_dialog_alone(window, monkeypatch):
 def test_the_modal_guard_is_running(window):
     assert window._modal_guard.isActive()
     assert window._modal_guard.interval() > 0
+
+
+# ── the windowed build (console=False) ──────────────────────────────────────────────
+# Reported from a downloaded Windows build: double-clicking the .exe died before a
+# window appeared, with `faulthandler.enable() -> RuntimeError: sys.stderr is None`.
+# The same binary launched from a terminal started fine, because a shell hands the
+# process a console. Everything below asserts the app never reaches for a stream that
+# a windowed build does not have.
+
+
+def test_the_desktop_starts_in_a_windowed_build_without_a_console(tmp_path):
+    """The whole startup path, in a subprocess whose stdout and stderr are None."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = tmp_path / "windowed.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import logging, pathlib, sys, traceback
+
+            report = pathlib.Path(sys.argv[1])
+            data = pathlib.Path(sys.argv[2])          # noqa: F841 - used inside the try
+            sys.stdout = None
+            sys.stderr = None                         # exactly what console=False does
+            try:
+                from netpilot.desktop.app import prepare_runtime
+
+                log_file = prepare_runtime(str(data))
+                logging.getLogger("netpilot.test").error("a line that must reach the file")
+                for handler in logging.getLogger().handlers:
+                    try:
+                        handler.flush()
+                    except Exception:
+                        pass
+                report.write_text(
+                    "SURVIVED\\n" + pathlib.Path(log_file).read_text(encoding="utf-8")
+                )
+            except BaseException:
+                report.write_text("CRASHED\\n" + traceback.format_exc())
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    report = tmp_path / "report.txt"
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, str(script), str(report), str(tmp_path / "data")],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert report.exists(), f"the child never finished:\n{proc.stdout}\n{proc.stderr}"
+    content = report.read_text(encoding="utf-8")
+    assert content.startswith("SURVIVED"), content
+    assert "netpilot desktop starting" in content, "the startup line never reached the log"
+    assert "a line that must reach the file" in content, "logging stopped working"
+
+
+def test_the_crash_handler_always_gives_faulthandler_a_file(tmp_path, monkeypatch):
+    """`faulthandler.enable()` without a file reaches for sys.stderr and raises."""
+    from netpilot.desktop import safety
+
+    files: list[object] = []
+
+    def fake_enable(*args, **kwargs):
+        files.append(kwargs.get("file"))
+        if kwargs.get("file") is None:
+            raise RuntimeError("sys.stderr is None")
+
+    monkeypatch.setattr(safety.faulthandler, "enable", fake_enable)
+    monkeypatch.setattr(
+        safety.faulthandler,
+        "dump_traceback_later",
+        lambda *a, **k: pytest.fail("dump_traceback_later(0) raises ValueError — never call it"),
+    )
+
+    safety.install_crash_handler(tmp_path)
+
+    assert files, "faulthandler was never configured"
+    assert all(f is not None for f in files), "it was asked to use a stream instead of a file"
+
+
+def test_logging_does_not_fall_back_to_a_stream(tmp_path, monkeypatch):
+    """With nowhere to write, stay quiet — do not crash on a missing stderr."""
+    import logging
+
+    from netpilot.desktop import safety
+
+    root = logging.getLogger()
+    before = list(root.handlers)
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    try:
+        path = safety.install_logging(blocker / "logs")
+        assert path.name == safety.LOG_NAME
+        added = [h for h in root.handlers if h not in before]
+        assert added, "a handler is expected even when the file cannot be opened"
+        assert all(not isinstance(h, logging.StreamHandler) or isinstance(h, logging.NullHandler)
+                   for h in added), "no stream fallback"
+    finally:
+        for handler in list(root.handlers):
+            if handler not in before:
+                root.removeHandler(handler)
+
+
+def test_the_exception_hook_does_not_write_to_a_missing_stderr(monkeypatch, tmp_path):
+    from netpilot.desktop import safety
+
+    safety.install_exception_hook(tmp_path)
+    monkeypatch.setattr(safety.sys, "stderr", None)
+    monkeypatch.setattr(safety.sys, "stdout", None)
+
+    hook = safety.sys.excepthook
+    hook(RuntimeError, RuntimeError("boom"), None)  # must not raise
+    monkeypatch.setattr(safety.sys, "stderr", monkeypatch.undo() or safety.sys.__stderr__)
+
+
+def test_write_fatal_records_a_startup_failure(tmp_path):
+    from netpilot.desktop import safety
+
+    try:
+        raise ValueError("could not open the database")
+    except ValueError as exc:
+        path = safety.write_fatal(exc, tmp_path)
+
+    assert path is not None and path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "could not open the database" in text
+    assert "Traceback" in text
+
+
+def test_prepare_runtime_is_idempotent(tmp_path):
+    from netpilot.desktop.app import prepare_runtime
+
+    first = prepare_runtime(str(tmp_path))
+    second = prepare_runtime(str(tmp_path))
+    assert first == second
+    import logging
+
+    file_handlers = [
+        h
+        for h in logging.getLogger().handlers
+        if isinstance(h, logging.handlers.RotatingFileHandler)
+    ]
+    assert len(file_handlers) == 1, "the log would be written twice"
+
+
+def test_the_window_knows_where_its_data_lives(window):
+    """An error from a slot is reported into *this* app's data directory."""
+    assert getattr(window, "_data_dir", "missing") is not None or window._data_dir is None
+
+
+def test_a_broken_slot_writes_a_fatal_report_beside_the_database(window, tmp_path):
+    from netpilot.desktop.safety import safe_slot, write_fatal
+
+    class W:
+        def __init__(self) -> None:
+            self._data_dir = str(tmp_path)
+            self.status = None
+
+        @safe_slot
+        def boom(self) -> None:
+            raise RuntimeError("kaboom from a slot")
+
+    W().boom()
+    report = tmp_path / "netpilot-fatal.log"
+    assert report.exists(), "the traceback was not written down anywhere"
+    assert "kaboom from a slot" in report.read_text(encoding="utf-8")

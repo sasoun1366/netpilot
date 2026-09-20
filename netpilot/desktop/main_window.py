@@ -925,6 +925,8 @@ class MainWindow(QMainWindow):
     def __init__(self, core: CoreThread, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.core = core
+        #: so error reports land beside the database this window is actually using
+        self._data_dir = getattr(core, "data_dir", None)
         self.bridge = UiBridge(core, self)
         self.setWindowTitle(f"netpilot {__version__}")
         self.resize(1320, 860)

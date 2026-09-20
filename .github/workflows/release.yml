@@ -39,15 +39,32 @@ jobs:
           ./out/netpilot-*-windows-cli.exe --version
           ./out/netpilot-*-windows-cli.exe --data-dir ./smoke doctor || true
       - name: Smoke-test the frozen desktop app
-        shell: bash
+        shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          # Launch it offscreen, let it settle, kill it, then prove the core came up:
-          # a packaged desktop app that cannot start is worse than no download at all.
-          timeout 30 ./out/netpilot-*-windows-desktop.exe || true
-          grep -q "core ready=True" "$USERPROFILE/.netpilot/netpilot.log"
-          echo "the desktop build started its core and wrote its log"
+          # Start-Process gives this GUI-subsystem executable **no console**, which is
+          # what a user double-clicking the download gets. Launching it from a shell is
+          # not the same test: the shell hands over its console, sys.stderr stops being
+          # None, and a build that dies on startup looks perfectly healthy. That is how
+          # v0.1.1 shipped with a crash-before-the-window bug.
+          $exe = Get-ChildItem out/netpilot-*-windows-desktop.exe | Select-Object -First 1
+          Write-Host "launching $($exe.Name)"
+          $proc = Start-Process -FilePath $exe.FullName -PassThru
+          if (-not $proc.WaitForExit(30000)) { Stop-Process -Id $proc.Id -Force }
+
+          $dir = Join-Path $env:USERPROFILE '.netpilot'
+          foreach ($name in 'netpilot.log', 'netpilot-fatal.log', 'netpilot-crash.log') {
+            $file = Join-Path $dir $name
+            if (Test-Path $file) { Write-Host "--- $name ---"; Get-Content $file }
+          }
+
+          $log = Join-Path $dir 'netpilot.log'
+          if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'core ready=True')) {
+            Write-Host 'the desktop build started, brought its core up and wrote its log'
+          } else {
+            Write-Error 'the desktop build never reached "core ready=True" — nothing was released'
+          }
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
