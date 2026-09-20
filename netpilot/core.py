@@ -440,6 +440,19 @@ class App:
                 return candidate
         return None
 
+    def resolve_template_for_device(self, template_name: str, device: Device) -> Template | None:
+        """The variant of *template_name* written for this device's vendor.
+
+        The library intentionally holds one entry per vendor under a shared name
+        ("NTP servers" exists for RouterOS *and* for IOS), so a group containing both
+        gets RouterOS syntax on one device and IOS syntax on the other.
+        """
+        vendor = resolve_vendor(device.vendor)
+        for candidate in merged_templates(self.store, vendor=vendor):
+            if candidate.name == template_name:
+                return candidate
+        return None
+
     def preview_template(self, template_id: int | None, body: str, vendor: str, variables: dict[str, str] | None = None) -> dict[str, Any]:
         template = self.store.get_template(template_id) if template_id else None
         if template is None:
@@ -488,32 +501,72 @@ class App:
         template = self.find_template(template_id, template_name, vendor)
         if template is None:
             template = Template(name="(ad-hoc)", vendor=vendor, body=body, variables={})
-        elif not (body or "").strip():
-            # A caller that names a template should not also have to repeat its body.
+        # Whether the *caller* supplied a body decides per-device resolution below: an
+        # explicit body wins everywhere, otherwise each device renders its own variant.
+        caller_body = (body or "").strip()
+        if not caller_body:
             body = template.body
         devices = self.resolve_targets(device_ids, tags, match_all)
         if not devices:
             raise ValueError("no devices matched the selection")
-        # Drop devices whose vendor cannot take a push, so the job summary is honest
-        # about what will actually happen.
-        usable, skipped = [], []
+
+        # Decide, per device, which template speaks its language — and drop the ones that
+        # cannot take this push at all, so the job summary is honest about what will
+        # actually happen instead of failing halfway through a change window.
+        usable: list[Device] = []
+        skipped: list[tuple[Device, str]] = []
+        bodies: dict[int, str] = {}
+        variables_by_device: dict[int, dict[str, str]] = {}
         for device in devices:
-            if get_adapter(device.vendor).supports_deploy:
-                usable.append(device)
-            else:
-                skipped.append(device)
+            label = get_adapter(device.vendor).label
+            if not get_adapter(device.vendor).supports_deploy:
+                skipped.append(
+                    (device, f"{label} has no modelled configuration push — monitoring only")
+                )
+                continue
+
+            variant = template
+            if template_name:
+                variant = self.resolve_template_for_device(template_name, device)
+                if variant is None:
+                    skipped.append((device, f"no {template_name!r} template for {label}"))
+                    continue
+            elif template is not None and (template_vendor := resolve_vendor(template.vendor)):
+                device_vendor = resolve_vendor(device.vendor)
+                if device_vendor != template_vendor:
+                    skipped.append(
+                        (
+                            device,
+                            f"template is {template_vendor} syntax, the device runs "
+                            f"{device_vendor}",
+                        )
+                    )
+                    continue
+
+            if variant is not None:
+                bodies[device.id] = body if caller_body else variant.body
+                variables_by_device[device.id] = dict(variant.variables)
+            usable.append(device)
+
         if not usable:
-            raise ValueError(
-                "none of the selected devices support configuration push "
-                f"({len(skipped)} skipped: generic SSH shell)"
+            detail = "; ".join(f"{d.name}: {why}" for d, why in skipped) or (
+                "no devices matched the selection"
             )
+            raise ValueError(
+                f"none of the selected devices support configuration push: {detail}"
+            )
+
+        primary_body = bodies.get(usable[0].id, body)
         return self.deploy.plan(
             template=template,
-            body=body,
+            body=primary_body,
             devices=usable,
             variables=variables,
             options=DeployOptions.from_dict(options),
             triggered_by=triggered_by,
+            bodies=bodies,
+            variables_by_device=variables_by_device,
+            excluded=skipped,
         )
 
     async def run_deploy(self, job_id: int) -> Job | None:

@@ -314,15 +314,14 @@ def test_create_deploy_marks_generic_devices_as_skipped(app):
         match_all=True,
         options={"dry_run": True},
     )
-    # the generic shell is not in the job at all — create_deploy excludes it up front
-    assert job.total == 1
-
-    # ... while a device that is removed from the inventory after planning is skipped
-    app.delete_device(good.id)
-    asyncio.run(app.run_deploy(job.id))
-    finished = app.store.get_job(job.id)
-    assert finished.skipped == 1
-    assert finished.succeeded == 0
+    # The generic shell is excluded from the push but still listed on the job, so the
+    # operator sees why their device was not touched.
+    assert job.total == 2
+    assert job.skipped == 1
+    detail = app.job_detail(job.id)
+    by_name = {t["device_name"]: t for t in detail["targets"]}
+    assert "monitoring only" in by_name["shell"]["error"]
+    assert by_name["r1"]["status"] == "pending"
 
 
 def test_create_deploy_renders_per_target_commands(app):
@@ -401,6 +400,7 @@ def test_web_and_desktop_share_the_same_facade():
     """Both UIs must be thin: assert the entry points take an App, not a private path."""
     import inspect
 
+    pytest.importorskip("PyQt6", reason="the desktop extra is optional")
     from netpilot.desktop import bridge
     from netpilot.web import app as web_app
 
@@ -442,3 +442,110 @@ def test_store_and_app_share_one_file(tmp_path):
             second.store.close()
     finally:
         app.store.close()
+
+
+# ── mixed vendors in one job ────────────────────────────────────────────────────────
+
+
+def test_one_template_name_renders_per_vendor(app):
+    """The library ships "NTP servers" for both vendors under one name.
+
+    A group containing a RouterOS box and an IOS box must get each one's own syntax —
+    not one vendor's commands sprayed across the fleet.
+    """
+    mikrotik = asyncio.run(
+        app.add_device({"name": "r1", "host": "10.80.0.1", "vendor": "mikrotik"})
+    )
+    cisco = asyncio.run(app.add_device({"name": "s1", "host": "10.80.0.2", "vendor": "cisco"}))
+
+    job = app.create_deploy(
+        body="",
+        vendor="mikrotik",
+        device_ids=[mikrotik.id, cisco.id],
+        template_name="NTP servers",
+        options={"dry_run": True},
+    )
+    commands = {t["device_name"]: t["commands"] for t in app.job_detail(job.id)["targets"]}
+
+    assert any(c.startswith("/system ntp") for c in commands["r1"])
+    assert any(c.startswith("ntp server") for c in commands["s1"])
+    assert not any(c.startswith("/system") for c in commands["s1"])
+
+
+def test_a_device_whose_vendor_has_no_variant_is_skipped(app):
+    """A RouterOS-only template selected against an IOS device: skip it, say why."""
+    asyncio.run(app.add_device({"name": "r1", "host": "10.80.0.6", "vendor": "mikrotik"}))
+    asyncio.run(app.add_device({"name": "s1", "host": "10.80.0.3", "vendor": "cisco"}))
+    job = app.create_deploy(
+        body="",
+        vendor="mikrotik",
+        device_ids=[1, 2],
+        template_name="DHCP server for a VLAN",  # RouterOS only
+        options={"dry_run": True},
+    )
+    targets = {t["device_name"]: t for t in app.job_detail(job.id)["targets"]}
+    assert targets["r1"]["status"] == "pending"
+    assert targets["s1"]["status"] == "skipped"
+    assert "no 'DHCP server for a VLAN' template" in targets["s1"]["error"]
+
+
+def test_a_vendor_specific_template_never_targets_another_vendor(app):
+    asyncio.run(app.add_device({"name": "s1", "host": "10.80.0.4", "vendor": "cisco"}))
+    with pytest.raises(ValueError, match="support configuration push"):
+        app.create_deploy(
+            body="",
+            vendor="mikrotik",
+            device_ids=[1],
+            template_id=app.find_template(template_name="DHCP server for a VLAN",
+                                          vendor="mikrotik").id,
+            options={"dry_run": True},
+        )
+
+
+async def _no_backup(*_args, **_kwargs):
+    return {"ok": True, "bytes": 0, "lines": 0}
+
+
+def test_the_planned_commands_are_what_runs(app, monkeypatch):
+    """No surprise between the reviewed plan and the executed command list."""
+    asyncio.run(app.add_device({"name": "r1", "host": "10.80.0.5", "vendor": "mikrotik"}))
+    job = app.create_deploy(
+        body="", vendor="mikrotik", device_ids=[1],
+        template_name="NTP servers", options={"dry_run": False, "backup_before": False,
+                                             "auto_rollback": False, "save_config": False},
+    )
+    planned = app.job_detail(job.id)["targets"][0]["commands"]
+
+    seen: list[list[str]] = []
+
+    class RecordingAdapter:
+        name = "mikrotik"
+        label = "MikroTik"
+        supports_deploy = True
+        rollback_support = "manual"
+
+        def __init__(self, device, credential=None, timeout=60.0):  # noqa: ANN001
+            self.device = device
+
+        def connect(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def fetch_config(self) -> str:
+            return ""
+
+        def apply_commands(self, commands, save=True):  # noqa: ANN001
+            seen.append(list(commands))
+            return []
+
+        def save(self) -> bool:
+            return True
+
+    import netpilot.deploy.engine as engine
+
+    monkeypatch.setattr(engine, "get_adapter", lambda _vendor: RecordingAdapter)
+    monkeypatch.setattr(engine, "capture_backup", _no_backup)
+    asyncio.run(app.run_deploy(job.id))
+    assert seen == [planned]

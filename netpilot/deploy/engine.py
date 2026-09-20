@@ -121,8 +121,16 @@ class DeployEngine:
         variables: dict[str, str] | None = None,
         options: DeployOptions | None = None,
         triggered_by: str = "manual",
+        bodies: dict[int, str] | None = None,
+        variables_by_device: dict[int, dict[str, str]] | None = None,
+        excluded: Sequence[tuple[Device, str]] = (),
     ) -> Job:
-        """Create a job + target rows without running anything."""
+        """Create a job + target rows without running anything.
+
+        ``bodies`` / ``variables_by_device`` let one job carry a different (vendor
+        specific) rendering per device: the library ships the same template name once
+        per vendor, and a mixed group should get the syntax each device understands.
+        """
         opts = options or DeployOptions()
         # Template defaults first, then the operator's overrides — otherwise a caller
         # that only supplies the values it changed would push literal ``{{ placeholders }}``
@@ -144,9 +152,14 @@ class DeployEngine:
             # Render now so the operator can review the exact commands per device *before*
             # the job starts; the vendor (and therefore the syntax) can differ per target.
             error = ""
+            target_body = (bodies or {}).get(device.id, body)
+            target_variables = dict(merged_variables)
+            if variables_by_device and device.id in variables_by_device:
+                target_variables = dict(variables_by_device[device.id])
+                target_variables.update(variables or {})
             try:
                 adapter_cls = get_adapter(device.vendor)
-                rendered = adapter_cls.render_config(body, merged_variables)
+                rendered = adapter_cls.render_config(target_body, target_variables)
                 commands = adapter_cls.split_config(rendered)
             except Exception as exc:  # noqa: BLE001 - one bad device must not block planning
                 commands = []
@@ -177,6 +190,24 @@ class DeployEngine:
                     commands=commands,
                 )
             )
+
+        # Devices the operator selected that cannot take this push still belong on the
+        # job: a silently shortened target list is how a change window goes wrong.
+        for device, reason in excluded:
+            targets.append(
+                JobTarget(
+                    device_id=device.id,
+                    device_name=device.name,
+                    host=device.host,
+                    status=TARGET_SKIPPED,
+                    error=reason,
+                )
+            )
+
+        # Count what we already know, so a plan-only response (the preview the UI shows
+        # before anything runs) is not reporting 0 skipped while listing skipped targets.
+        job.total = len(targets)
+        job.skipped = sum(1 for t in targets if t.status == TARGET_SKIPPED)
         return self.store.create_job(job, targets)
 
     def preview(self, template: Template, device: Device, variables: dict[str, str] | None = None) -> dict[str, Any]:
@@ -354,9 +385,16 @@ class DeployEngine:
         # ---- dry run -----------------------------------------------------------------
         # Handled before an adapter is ever constructed: a dry run performs no network
         # I/O and does not even import the SSH stack.
-        rendered = adapter_cls.render_config(job.body, job.variables)
-        commands = adapter_cls.split_config(rendered)
-        target.commands = commands
+        if target.commands:
+            # The plan already rendered this device's commands — very possibly the
+            # vendor-specific variant of the template rather than job.body. What the
+            # operator reviewed in the preview is exactly what runs.
+            commands = list(target.commands)
+            rendered = "\n".join(commands)
+        else:
+            rendered = adapter_cls.render_config(job.body, job.variables)
+            commands = adapter_cls.split_config(rendered)
+            target.commands = commands
 
         if not commands:
             target.status = TARGET_SKIPPED
