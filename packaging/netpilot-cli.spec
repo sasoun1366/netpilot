@@ -3,13 +3,23 @@
 # Build:  pyinstaller packaging/netpilot-cli.spec
 # Output: dist/netpilot.exe (Windows) / dist/netpilot (Linux, macOS)
 
+import sys
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_data_files
+
+# The entry script lives next to this spec, but the analysis must also see the
+# repository root so `import netpilot` resolves even from a non-editable checkout.
+SPEC_DIR = Path(SPECPATH)  # noqa: F821 - injected by PyInstaller
+REPO_ROOT = SPEC_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 datas = collect_data_files("netpilot", includes=["web/static/*"])
 
 analysis = Analysis(
-    ["netpilot_cli_entry.py"],
-    pathex=[],
+    [str(SPEC_DIR / "netpilot_cli_entry.py")],
+    pathex=[str(REPO_ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=[
