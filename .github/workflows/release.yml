@@ -19,9 +19,9 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[packaging]"
+          pip install -e ".[packaging,dev]"
       - name: Run the test suite before shipping anything
-        run: pytest -q
+        run: python -m pytest -q
       - name: Build CLI executable
         run: pyinstaller packaging/netpilot-cli.spec
       - name: Build desktop executable
