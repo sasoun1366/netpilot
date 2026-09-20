@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netpilot"
+version = "0.1.0"
+description = "Network monitoring dashboard and bulk configuration deployment for MikroTik and Cisco devices."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "netpilot contributors" }]
+keywords = ["network", "monitoring", "snmp", "icmp", "mikrotik", "cisco", "automation", "dashboard"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "paramiko>=3.0",
+    "cryptography>=41.0",
+]
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+gui = [
+    "PyQt6>=6.5",
+]
+snmp = [
+    "pysnmp>=6.0",
+]
+all = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "PyQt6>=6.5",
+    "pysnmp>=6.0",
+]
+packaging = [
+    "pyinstaller>=6.0",
+    "PyQt6>=6.5",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pysnmp>=6.0",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pysnmp>=6.0",
+]
+
+[project.scripts]
+netpilot = "netpilot.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/sasoun1366/netpilot"
+Issues = "https://github.com/sasoun1366/netpilot/issues"
+
+[tool.setuptools.packages.find]
+include = ["netpilot*"]
+
+[tool.setuptools.package-data]
+netpilot = ["web/static/*", "web/templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>netpilot — network operations console</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='none' stroke='%234fd1a3' stroke-width='3'/><circle cx='16' cy='16' r='4' fill='%234fd1a3'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" class="brand-mark" aria-hidden="true">
+        <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="2.4" opacity=".35"/>
+        <circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="2.4" opacity=".6"/>
+        <circle cx="16" cy="16" r="3.2" fill="currentColor"/>
+      </svg>
+      <div>
+        <div class="brand-name">netpilot</div>
+        <div class="brand-tag" id="brand-tag">connecting…</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-view="dashboard"><span class="nav-ico">▚</span>Dashboard</button>
+      <button class="nav-item" data-view="inventory"><span class="nav-ico">▤</span>Devices<span class="pill" id="nav-device-count">0</span></button>
+      <button class="nav-item" data-view="deploy"><span class="nav-ico">⇪</span>Deploy config</button>
+      <button class="nav-item" data-view="templates"><span class="nav-ico">❏</span>Templates</button>
+      <button class="nav-item" data-view="backups"><span class="nav-ico">⛁</span>Backups</button>
+      <button class="nav-item" data-view="events"><span class="nav-ico">⚑</span>Events<span class="pill alert" id="nav-alert-count">0</span></button>
+      <button class="nav-item" data-view="settings"><span class="nav-ico">⚙</span>Settings</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="live-dot" id="live-dot"></div>
+      <span id="live-label">connecting…</span>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- ───────────────────────── dashboard ───────────────────────── -->
+    <section class="view active" id="view-dashboard">
+      <header class="view-head">
+        <div>
+          <h1>Operations dashboard</h1>
+          <p class="sub" id="dash-sub">live state of every device in the inventory</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="btn-refresh">Refresh</button>
+          <button class="btn primary" id="btn-quick-add">+ Add device</button>
+        </div>
+      </header>
+
+      <div class="stat-grid" id="stat-grid"></div>
+
+      <div class="split">
+        <div>
+          <h2 class="section-title">Devices <span class="muted" id="dash-device-note"></span></h2>
+          <div class="filters">
+            <input type="search" id="dash-search" placeholder="Filter by name, host or site…">
+            <div class="chip-row" id="tag-filter"></div>
+          </div>
+          <div class="card-grid" id="device-grid"></div>
+        </div>
+        <div>
+          <h2 class="section-title">Event feed <button class="mini" id="btn-ack-all">ack all</button></h2>
+          <div class="event-list" id="dash-events"></div>
+          <h2 class="section-title">Recent deployments</h2>
+          <div class="event-list" id="dash-jobs"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── inventory ───────────────────────── -->
+    <section class="view" id="view-inventory">
+      <header class="view-head">
+        <div>
+          <h1>Devices</h1>
+          <p class="sub">adding a device starts monitoring it immediately — and makes it a deploy target</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="btn-credentials">Credentials</button>
+          <button class="btn primary" id="btn-add-device">+ Add device</button>
+        </div>
+      </header>
+      <div class="table-wrap">
+        <table class="table" id="device-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>Host</th><th>Vendor</th><th>Site</th>
+              <th>State</th><th>Latency</th><th>24h</th><th>Tags</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── deploy ───────────────────────── -->
+    <section class="view" id="view-deploy">
+      <header class="view-head">
+        <div>
+          <h1>Deploy configuration</h1>
+          <p class="sub">pick a template, choose targets by tag or individually, preview, then push</p>
+        </div>
+      </header>
+
+      <div class="deploy-layout">
+        <div class="panel">
+          <h3>1 · Template</h3>
+          <select id="deploy-template"></select>
+          <textarea id="deploy-body" rows="8" placeholder="Template body — edit freely"></textarea>
+          <div id="deploy-vars" class="var-grid"></div>
+          <label class="switch"><input type="checkbox" id="deploy-save" checked> persist config on device (write memory / RouterOS is already persistent)</label>
+        </div>
+
+        <div class="panel">
+          <h3>2 · Targets</h3>
+          <input type="search" id="deploy-search" placeholder="Filter devices…">
+          <div class="chip-row" id="deploy-tag-row"></div>
+          <div class="target-list" id="deploy-targets"></div>
+          <div class="hint" id="deploy-target-count"></div>
+        </div>
+
+        <div class="panel">
+          <h3>3 · Preview &amp; run</h3>
+          <div class="options">
+            <label class="switch"><input type="checkbox" id="opt-dry" checked> dry run (change nothing)</label>
+            <label class="switch"><input type="checkbox" id="opt-backup" checked> capture running config first</label>
+            <label class="switch"><input type="checkbox" id="opt-rollback" checked> create rollback checkpoint</label>
+            <label class="switch"><input type="checkbox" id="opt-stop" > stop after first failure</label>
+            <label class="field-inline">parallel <input type="number" id="opt-parallel" value="5" min="1" max="32"></label>
+          </div>
+          <div class="preview" id="deploy-preview"><span class="muted">Choose a template to see the rendered commands.</span></div>
+          <button class="btn primary wide" id="btn-deploy-run">Run deployment</button>
+          <div class="hint" id="deploy-warning"></div>
+        </div>
+      </div>
+
+      <h2 class="section-title">Deployment history</h2>
+      <div class="table-wrap"><table class="table" id="job-table">
+        <thead><tr><th>#</th><th>Template</th><th>Status</th><th>Targets</th><th>OK</th><th>Failed</th><th>Duration</th><th>When</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </section>
+
+    <!-- ───────────────────────── templates ───────────────────────── -->
+    <section class="view" id="view-templates">
+      <header class="view-head">
+        <div>
+          <h1>Configuration templates</h1>
+          <p class="sub">built-in library plus your own — used by bulk deploys</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="btn-new-template">+ New template</button>
+        </div>
+      </header>
+      <div class="table-wrap"><table class="table" id="template-table">
+        <thead><tr><th>Name</th><th>Vendor</th><th>Origin</th><th>Variables</th><th>Description</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </section>
+
+    <!-- ───────────────────────── backups ───────────────────────── -->
+    <section class="view" id="view-backups">
+      <header class="view-head">
+        <div>
+          <h1>Configuration backups</h1>
+          <p class="sub">every deploy stores the pre-change config automatically</p>
+        </div>
+      </header>
+      <div class="table-wrap"><table class="table" id="backup-table">
+        <thead><tr><th>#</th><th>Device</th><th>Host</th><th>When</th><th>Size</th><th>Source</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </section>
+
+    <!-- ───────────────────────── events ───────────────────────── -->
+    <section class="view" id="view-events">
+      <header class="view-head">
+        <div>
+          <h1>Events</h1>
+          <p class="sub">state transitions, deploys and notifications</p>
+        </div>
+        <div class="head-actions">
+          <select id="events-severity">
+            <option value="">all severities</option>
+            <option value="critical">critical</option>
+            <option value="warning">warning</option>
+            <option value="info">info</option>
+          </select>
+          <label class="switch"><input type="checkbox" id="events-unacked"> unacknowledged only</label>
+          <button class="btn ghost" id="btn-ack-all-2">Acknowledge all</button>
+        </div>
+      </header>
+      <div class="event-list wide" id="events-full"></div>
+    </section>
+
+    <!-- ───────────────────────── settings ───────────────────────── -->
+    <section class="view" id="view-settings">
+      <header class="view-head">
+        <div>
+          <h1>Settings</h1>
+          <p class="sub">notifications, runtime status and the environment netpilot is running in</p>
+        </div>
+      </header>
+
+      <div class="split">
+        <div class="panel">
+          <h3>Notifications</h3>
+          <label class="switch"><input type="checkbox" id="nt-enabled"> enable outbound alerts</label>
+          <div class="form-grid">
+            <label>Minimum severity
+              <select id="nt-min"><option value="info">info</option><option value="warning">warning</option><option value="critical">critical</option></select>
+            </label>
+            <label>Repeat cooldown (seconds)<input type="number" id="nt-cooldown" min="0" value="300"></label>
+            <label>Quiet hours (HH:MM-HH:MM)<input type="text" id="nt-quiet" placeholder="23:00-07:00"></label>
+            <label class="switch inline"><input type="checkbox" id="nt-recovery" checked> also notify on recovery</label>
+          </div>
+
+          <h4>Webhook</h4>
+          <div class="form-grid">
+            <label class="wide">URL<input type="text" id="nt-webhook" placeholder="https://hooks.slack.com/services/…"></label>
+            <label>Format
+              <select id="nt-kind"><option value="generic">generic JSON</option><option value="slack">Slack</option><option value="discord">Discord</option><option value="teams">MS Teams</option></select>
+            </label>
+          </div>
+
+          <h4>Email (SMTP)</h4>
+          <div class="form-grid">
+            <label>Host<input type="text" id="nt-smtp-host" placeholder="smtp.example.com"></label>
+            <label>Port<input type="number" id="nt-smtp-port" value="587"></label>
+            <label>Username<input type="text" id="nt-smtp-user" autocomplete="off"></label>
+            <label>Password<input type="password" id="nt-smtp-pass" autocomplete="new-password" placeholder="••••••"></label>
+            <label>From<input type="text" id="nt-smtp-from" placeholder="netpilot@example.com"></label>
+            <label>To<input type="text" id="nt-smtp-to" placeholder="noc@example.com"></label>
+          </div>
+
+          <h4>Syslog</h4>
+          <div class="form-grid">
+            <label>Host<input type="text" id="nt-syslog-host" placeholder="10.0.0.50"></label>
+            <label>Port<input type="number" id="nt-syslog-port" value="514"></label>
+          </div>
+
+          <div class="head-actions">
+            <button class="btn primary" id="btn-save-notify">Save</button>
+            <button class="btn ghost" id="btn-test-notify">Send test</button>
+          </div>
+          <div class="hint" id="notify-result"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Runtime</h3>
+          <dl class="kv" id="runtime-kv"></dl>
+          <h3>Delivery status</h3>
+          <div id="sink-status" class="hint"></div>
+          <h3>Data location</h3>
+          <p class="hint" id="data-dir"></p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ───────────────────────── device drawer ───────────────────────── -->
+<div class="drawer-backdrop" id="drawer-backdrop"></div>
+<aside class="drawer" id="device-drawer">
+  <div class="drawer-head">
+    <div>
+      <h2 id="dd-name">Device</h2>
+      <p class="sub" id="dd-sub"></p>
+    </div>
+    <button class="btn ghost" id="dd-close">Close</button>
+  </div>
+  <div class="drawer-body" id="dd-body"></div>
+</aside>
+
+<!-- ───────────────────────── modal ───────────────────────── -->
+<div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal" id="modal">
+    <div class="modal-head">
+      <h2 id="modal-title">Title</h2>
+      <button class="btn ghost" id="modal-close">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
