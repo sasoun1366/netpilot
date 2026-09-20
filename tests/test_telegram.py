@@ -163,7 +163,28 @@ def test_missing_secrets_skip_the_announcement_without_failing(tmp_path, monkeyp
     assert "::warning::" in capsys.readouterr().out
 
 
-def test_no_release_in_the_event_is_a_quiet_no_op(tmp_path, capsys):
+def test_a_manual_run_shows_the_latest_release(tmp_path, monkeypatch, capsys):
+    """Pressing "Run workflow" with no test message should still show a real post."""
+    event = tmp_path / "event.json"
+    event.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "sasoun1366/netpilot")
+    monkeypatch.setattr(announce, "latest_release", lambda *a, **k: payload(body="Notes"))
+    assert announce.main(["--event", str(event), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "showing the latest release" in out
+    assert "🚀" in out, "the post itself must be printed"
+
+
+def test_no_release_anywhere_is_a_quiet_no_op(tmp_path, monkeypatch, capsys):
+    event = tmp_path / "event.json"
+    event.write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    assert announce.main(["--event", str(event)]) == 0
+    assert "nothing to announce" in capsys.readouterr().out
+
+
+def test_no_release_in_the_event_is_a_quiet_no_op(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
     event = tmp_path / "event.json"
     event.write_text("{}", encoding="utf-8")
     assert announce.main(["--event", str(event)]) == 0
