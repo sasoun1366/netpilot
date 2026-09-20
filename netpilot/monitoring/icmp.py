@@ -32,6 +32,19 @@ ICMP_ECHO_REPLY = 0
 _IS_WINDOWS = platform.system().lower().startswith("win")
 
 
+def subprocess_kwargs() -> dict[str, object]:
+    """Extra ``subprocess`` arguments needed to stay invisible.
+
+    A windowed build (PyInstaller ``console=False``, pythonw, or the desktop app) has no
+    console of its own, so Windows creates one for every child process — a black window
+    that appears, steals focus and vanishes, once per ICMP probe, right after a device is
+    added. ``CREATE_NO_WINDOW`` is the documented cure.
+    """
+    if not _IS_WINDOWS:
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+
+
 class IcmpUnavailable(RuntimeError):
     """Raised when this host cannot send ICMP at all (missing capabilities)."""
 
@@ -200,7 +213,13 @@ def ping_binary(host: str, count: int = 3, timeout: float = 1.0, size: int = 32)
         argv = ["ping", "-c", str(count), "-W", str(max(1, int(timeout))), "-s", str(size), host]
     stats.transmitted = count
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=count * (timeout + 1) + 2)  # noqa: S603
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=count * (timeout + 1) + 2,
+            **subprocess_kwargs(),  # type: ignore[arg-type]
+        )
     except FileNotFoundError:
         stats.error = "the 'ping' binary is not installed"
         return stats

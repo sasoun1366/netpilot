@@ -20,11 +20,16 @@ import concurrent.futures
 import inspect
 import logging
 import threading
+import time
 from typing import Any, Callable, Coroutine
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
 log = logging.getLogger("netpilot.desktop.bridge")
+
+#: How long a core call may be outstanding before the desktop says something about it.
+#: Generous on purpose: a forced ICMP probe on Windows can take a few seconds.
+SLOW_CALL_SECONDS = 20.0
 
 
 class CoreThread(QThread):
@@ -135,7 +140,17 @@ class UiBridge(QObject):
         self._callbacks: dict[int, Callable[[Any], None]] = {}
         self._errors: dict[int, Callable[[Exception], None]] = {}
         self._counter = 0
+        self._started_at: dict[int, float] = {}
+        self._names: dict[int, str] = {}
+        self._warned: set[int] = set()
         self._completed.connect(self._dispatch)
+
+        # A core call that never comes back used to look exactly like a frozen window:
+        # nothing on screen changed and nothing was said. Now it is announced.
+        self._watchdog = QTimer(self)
+        self._watchdog.setInterval(5000)
+        self._watchdog.timeout.connect(self._check_slow_calls)
+        self._watchdog.start()
 
     def run(
         self,
@@ -168,6 +183,10 @@ class UiBridge(QObject):
         future = self.thread.submit(awaitable)
         token = self._counter
         self._counter += 1
+        self._started_at[token] = time.monotonic()
+        self._names[token] = getattr(work, "__qualname__", None) or getattr(
+            work, "__name__", None
+        ) or "core call"
         if on_done is not None:
             self._callbacks[token] = on_done
         if on_error is not None:
@@ -183,8 +202,30 @@ class UiBridge(QObject):
 
         future.add_done_callback(_finished)
 
+    def _check_slow_calls(self) -> None:
+        """Log a call that has been outstanding for a while, once per call."""
+        if not self._started_at:
+            return
+        now = time.monotonic()
+        for token, started in list(self._started_at.items()):
+            elapsed = now - started
+            if elapsed < SLOW_CALL_SECONDS or token in self._warned:
+                continue
+            self._warned.add(token)
+            log.warning(
+                "core call %r has been running for %.1fs",
+                self._names.get(token, "core call"),
+                elapsed,
+            )
+
+    def _forget(self, token: int) -> None:
+        self._started_at.pop(token, None)
+        self._names.pop(token, None)
+        self._warned.discard(token)
+
     def _dispatch(self, payload: object, error: object) -> None:
         token, result = payload  # type: ignore[misc]
+        self._forget(token)
         if error is not None:
             handler = self._errors.pop(token, None)
             self._callbacks.pop(token, None)

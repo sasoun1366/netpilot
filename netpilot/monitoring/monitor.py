@@ -155,25 +155,36 @@ class Monitor:
         self._running = True
         self.reload()
         while self._running:
-            now = time.time()
-            due: list[int] = []
-            while self._queue and self._queue[0][0] <= now:
-                _when, _seq, check_id = heapq.heappop(self._queue)
-                due.append(check_id)
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a monitoring engine stops being useful the
+                # moment one bad pass kills it; the next pass is one second away.
+                log.exception("monitor pass failed; retrying")
+                await asyncio.sleep(1.0)
 
-            for check_id in due:
-                check = self.store.get_check(check_id)
-                if check is None or not check.enabled:
-                    self._next_run.pop(check_id, None)
-                    continue
-                self._spawn(check)
+    async def _tick(self) -> None:
+        """One pass: launch everything that is due, then sleep until the next is."""
+        now = time.time()
+        due: list[int] = []
+        while self._queue and self._queue[0][0] <= now:
+            _when, _seq, check_id = heapq.heappop(self._queue)
+            due.append(check_id)
 
-            wait = 1.0
-            if self._queue:
-                wait = max(0.05, min(5.0, self._queue[0][0] - time.time()))
-            self._wake.clear()
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._wake.wait(), timeout=wait)
+        for check_id in due:
+            check = self.store.get_check(check_id)
+            if check is None or not check.enabled:
+                self._next_run.pop(check_id, None)
+                continue
+            self._spawn(check)
+
+        wait = 1.0
+        if self._queue:
+            wait = max(0.05, min(5.0, self._queue[0][0] - time.time()))
+        self._wake.clear()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._wake.wait(), timeout=wait)
 
     def _spawn(self, check: CheckConfig) -> None:
         task = asyncio.create_task(self._execute(check), name=f"check-{check.id}")
@@ -181,32 +192,61 @@ class Monitor:
         task.add_done_callback(self._inflight.discard)
 
     async def _execute(self, check: CheckConfig) -> None:
-        async with self._sem:
-            device = self.store.get_device(check.device_id)  # type: ignore[arg-type]
-            if device is None or not device.enabled:
+        keep_running = True
+        try:
+            async with self._sem:
+                device = self.store.get_device(check.device_id)  # type: ignore[arg-type]
+                if device is None or not device.enabled:
+                    # Nothing to probe and no point coming back: a disabled device stays
+                    # disabled until the next reload().
+                    self._next_run.pop(check.id, None)
+                    keep_running = False
+                    return
+                cred = (
+                    self.store.get_credential(device.credential_id)
+                    if device.credential_id
+                    else None
+                )
+                result = await run_check(check, device, cred)
+                self.checks_run += 1
+                try:
+                    self._record(device, check, result)
+                except Exception:
+                    # The device can be deleted while its probe is in flight, which makes
+                    # the write hit a foreign key that no longer exists. Recording must
+                    # never be able to stop the check from running again.
+                    log.exception("could not record result for check %s", check.id)
+        finally:
+            if keep_running:
+                self._reschedule(check)
+
+    def _reschedule(self, check: CheckConfig) -> None:
+        """Queue the next run — but only while the check still exists."""
+        if check.id is None:
+            return
+        try:
+            if self.store.get_check(check.id) is None:
                 self._next_run.pop(check.id, None)
                 return
-            cred = (
-                self.store.get_credential(device.credential_id)
-                if device.credential_id
-                else None
-            )
-            result = await run_check(check, device, cred)
-            self.checks_run += 1
-            self._record(device, check, result)
-
-        # reschedule whether or not the probe succeeded
+        except Exception:  # noqa: BLE001 - a broken lookup must not stop the scheduler
+            log.exception("could not look up check %s", check.id)
         interval = max(5, int(check.interval_sec))
         when = time.time() + interval
-        if check.id is not None:
-            self._next_run[check.id] = when
-            heapq.heappush(self._queue, (when, self._next_seq(), check.id))
+        self._next_run[check.id] = when
+        heapq.heappush(self._queue, (when, self._next_seq(), check.id))
         self._wake.set()
 
     # -- state machine ---------------------------------------------------------------
 
     def _record(self, device: Device, check: CheckConfig, result: CheckResult) -> None:
         """Fold one probe result into per-check state and re-derive device health."""
+        # The delete-confirm dialog and a probe that is already in flight can overlap;
+        # the device or the check may be gone by the time the result comes back.
+        if device.id is None or self.store.get_device(device.id) is None:
+            return
+        if check.id is not None and self.store.get_check(check.id) is None:
+            return
+
         self.store.add_result(result)
         self.results_written += 1
 

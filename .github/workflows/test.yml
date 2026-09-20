@@ -25,7 +25,7 @@ jobs:
         run: pytest -q
 
   windows:
-    name: core / windows
+    name: core + desktop / windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,12 +35,16 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[gui,dev]"
       - name: Run the test suite
+        # Includes tests/test_desktop.py, which drives the real window: add a device,
+        # open it, delete it. This is the platform where those flows ship as an .exe.
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: pytest -q
 
-  gui-import:
-    name: desktop app imports
+  desktop:
+    name: desktop / ubuntu
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,9 +56,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[gui,dev]"
           sudo apt-get update
-          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-keysyms1 libxcb-render-util0 libgl1
       - name: Load every desktop module offscreen
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           python -c "from netpilot.desktop.main_window import MainWindow; from netpilot.desktop.widgets import DARK_QSS; from netpilot.desktop.bridge import CoreThread; from netpilot.desktop.widgets import Sparkline, StatePill; print('desktop modules import cleanly')"
+      - name: Drive the real window offscreen
+        # Catches the class of bug that shipped in v0.1.0: a slot calling a method that
+        # does not exist is a qFatal(), which the user experiences as a frozen window.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/test_desktop.py -q

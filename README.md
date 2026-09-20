@@ -270,7 +270,7 @@ change.
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest -q                    # 355 tests, no network access required
+pytest -q                    # 391 tests, no network access required
 ```
 
 The suite runs against real sockets, a real SQLite file, and real HTTP servers
@@ -285,6 +285,21 @@ QT_QPA_PLATFORM=offscreen python tools/screenshots.py   # regenerate docs/*.png
 
 Contributions welcome. New adapters are the most useful kind — see
 `netpilot/adapters/base.py`.
+
+### If something goes wrong
+
+The desktop app writes a log next to its database:
+
+| Platform | Log |
+| --- | --- |
+| Windows | `%USERPROFILE%\.netpilot\netpilot.log` |
+| macOS / Linux | `~/.netpilot/netpilot.log` |
+
+If a window stops responding or an action seems to do nothing, that file has the
+traceback. Any core call that has not returned within 20 seconds is logged there as
+well, so a slow operation is distinguishable from a stuck one. The desktop suite in
+`tests/test_desktop.py` drives the real window — adding a device, opening it,
+deleting it — so the flows users live in are covered end to end.
 
 ## Roadmap
 

@@ -42,6 +42,7 @@ async def _run(cmd: list[str], timeout: float) -> tuple[int, str, str]:
             text=True,
             timeout=timeout,
             check=False,
+            **icmp.subprocess_kwargs(),  # type: ignore[arg-type]
         )
         return proc.returncode, proc.stdout, proc.stderr
 

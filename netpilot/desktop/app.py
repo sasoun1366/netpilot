@@ -13,6 +13,14 @@ log = logging.getLogger("netpilot.desktop")
 
 def run_gui(data_dir: str | None = None, start_monitor: bool = True) -> int:
     """Launch the desktop application. Returns the process exit code."""
+    # Before anything else: where do we write if this goes wrong?
+    from .safety import install_crash_handler, install_exception_hook, install_logging
+
+    log_file = install_logging(data_dir)
+    install_crash_handler(data_dir)
+    install_exception_hook(data_dir)
+    log.info("netpilot desktop starting (data_dir=%s, log=%s)", data_dir, log_file)
+
     try:
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QApplication, QMessageBox
@@ -37,6 +45,7 @@ def run_gui(data_dir: str | None = None, start_monitor: bool = True) -> int:
     application.setStyleSheet(DARK_QSS)
 
     core = CoreThread(data_dir=data_dir, start_monitor=start_monitor)
+    core.ready.connect(lambda ok, detail: log.info("core ready=%s (%s)", ok, detail))
     core.start()
 
     if not core.wait_ready(20.0):
@@ -51,11 +60,20 @@ def run_gui(data_dir: str | None = None, start_monitor: bool = True) -> int:
     window = MainWindow(core)
     window.setWindowIcon(app_icon())
     window.show()
+    # Launched from a shortcut or a console-less build, the window can start behind
+    # whatever owns the screen; make sure the user actually sees it.
+    window.raise_()
+    window.activateWindow()
 
     try:
-        return application.exec()
+        code = application.exec()
+    except Exception:  # noqa: BLE001 - a crash must leave a traceback behind
+        log.exception("the desktop event loop failed")
+        code = 1
     finally:
         core.stop()
+        log.info("netpilot desktop exiting with code %s", code)
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

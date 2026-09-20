@@ -8,6 +8,7 @@ without a network.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 
 import pytest
@@ -334,3 +335,115 @@ def test_concurrency_is_bounded(store):
     monitor = Monitor(store, concurrency=4)
     assert monitor.concurrency == 4
     assert monitor._sem._value == 4
+
+
+# ── a delete that lands mid-probe ──────────────────────────────────────────────────
+# Reported from the desktop app: deleting a device made the window look dead. The probe
+# that was already in flight wrote its result to a foreign key that had just been
+# removed, the write raised, and the check was never queued again — so that device (and
+# everything recorded from it) went quiet for good.
+
+
+def test_recording_a_result_for_a_deleted_check_is_a_no_op(store, monitor):
+    device = _device(store)
+    check = _check(store, device)
+    store.delete_device(device.id)  # deleted while the probe was in flight
+
+    _record(monitor, device, check, True)  # must not raise
+
+    assert store.list_events() == [], "nothing may be written for a device that is gone"
+
+
+def test_recording_a_result_for_a_deleted_device_is_a_no_op(store, monitor):
+    device = _device(store)
+    check = _check(store, device)
+    store.delete_check(check.id)
+    _record(monitor, device, check, True)  # keyed on the check: gone, so do nothing
+
+
+def test_a_check_is_requeued_even_when_recording_fails(store, monitor):
+    """Monitoring must not stop because one write went wrong."""
+    device = _device(store)
+    check = _check(store, device)
+    monitor.reload()
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("disk on fire")
+
+    monitor._record = explode  # type: ignore[method-assign]
+
+    async def fake_run_check(*_args, **_kwargs):
+        return CheckResult(device_id=device.id, ok=True, latency_ms=1.0, message="ok")
+
+    import netpilot.monitoring.monitor as monitor_mod
+
+    original = monitor_mod.run_check
+    monitor_mod.run_check = fake_run_check  # type: ignore[assignment]
+    try:
+        asyncio.run(monitor._execute(check))
+    finally:
+        monitor_mod.run_check = original  # type: ignore[assignment]
+
+    assert check.id in monitor._next_run, "the check was dropped from the schedule"
+    assert any(entry[2] == check.id for entry in monitor._queue)
+
+
+def test_a_deleted_check_is_not_requeued(store, monitor):
+    device = _device(store)
+    check = _check(store, device)
+    monitor.reload()
+
+    async def fake_run_check(*_args, **_kwargs):
+        return CheckResult(device_id=device.id, ok=True, latency_ms=1.0, message="ok")
+
+    import netpilot.monitoring.monitor as monitor_mod
+
+    original = monitor_mod.run_check
+    monitor_mod.run_check = fake_run_check  # type: ignore[assignment]
+    try:
+        store.delete_check(check.id)
+        queued_before = len(monitor._queue)
+        asyncio.run(monitor._execute(check))
+    finally:
+        monitor_mod.run_check = original  # type: ignore[assignment]
+
+    assert check.id not in monitor._next_run, "a deleted check keeps being probed"
+    assert len(monitor._queue) == queued_before, "a deleted check was queued again"
+
+
+def test_one_bad_pass_does_not_stop_the_monitor(store, monitor, monkeypatch):
+    """The scheduler loop must outlive any single failed pass."""
+    monkeypatch.setattr(monitor, "reload", lambda: 0)
+    calls = {"n": 0}
+
+    async def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient database error")
+        monitor._running = False  # second pass ends the test
+
+    monkeypatch.setattr(monitor, "_tick", flaky)
+    asyncio.run(monitor._loop())
+
+    assert calls["n"] >= 2, "the loop gave up after the first failure"
+
+
+def test_a_disabled_device_is_left_alone(store, monitor):
+    device = _device(store)
+    check = _check(store, device)
+    monitor.reload()
+    store.update_device(dataclasses.replace(device, enabled=False))
+
+    async def fake_run_check(*_args, **_kwargs):  # pragma: no cover - must not be called
+        raise AssertionError("a disabled device must not be probed")
+
+    import netpilot.monitoring.monitor as monitor_mod
+
+    original = monitor_mod.run_check
+    monitor_mod.run_check = fake_run_check  # type: ignore[assignment]
+    try:
+        asyncio.run(monitor._execute(check))
+    finally:
+        monitor_mod.run_check = original  # type: ignore[assignment]
+
+    assert check.id not in monitor._next_run

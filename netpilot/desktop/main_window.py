@@ -16,6 +16,7 @@ from typing import Any, Callable
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QFont, QIcon, QPixmap, QPainter, QColor
 from PyQt6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -52,6 +53,7 @@ from PyQt6.QtWidgets import (
 from .. import __version__
 from ..models import CHECK_KINDS
 from .bridge import CoreThread, UiBridge
+from .safety import safe_slot
 from .widgets import (
     COLORS,
     DARK_QSS,
@@ -66,6 +68,8 @@ from .widgets import (
 )
 
 REFRESH_MS = 15000
+#: How often to check that a modal dialog is still in front of the main window.
+MODAL_GUARD_MS = 750
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -471,8 +475,9 @@ class TemplateEditDialog(QDialog):
         self._timer.start(400)
 
     def _preview(self) -> None:
-        if self._preview_cb is not None:
-            self._preview_cb(self.payload())
+        callback = getattr(self, "_preview_cb", None)
+        if callback is not None:
+            callback(self.payload())
 
     def _validate_and_accept(self) -> None:
         if not self.name.text().strip():
@@ -964,12 +969,32 @@ class MainWindow(QMainWindow):
         self._refresh_interval = REFRESH_MS
         self.refresh_timer.start(REFRESH_MS)
 
+        # On Windows a native dialog can open *behind* the window that asked for it, which
+        # looks exactly like a frozen application: the window ignores clicks and nothing
+        # on screen has changed. Keep whatever is modal in front.
+        self._modal_guard = QTimer(self)
+        self._modal_guard.timeout.connect(self._keep_modal_visible)
+        self._modal_guard.start(MODAL_GUARD_MS)
+
         QTimer.singleShot(300, self.refresh_all)
         QTimer.singleShot(450, self.load_meta)
         QTimer.singleShot(700, self.load_templates)
         QTimer.singleShot(900, self.load_jobs)
 
     # ── chrome ───────────────────────────────────────────────────────────────────────
+
+    def _keep_modal_visible(self) -> None:
+        """Bring an active modal dialog to the front if the OS hid it behind us.
+
+        Cheap and idempotent: when nothing is modal it does nothing at all.
+        """
+        modal = QApplication.activeModalWidget()
+        if modal is None or modal is self:
+            return
+        if not modal.isVisible() or modal.isActiveWindow():
+            return
+        modal.raise_()
+        modal.activateWindow()
 
     def _build_sidebar(self) -> QWidget:
         panel = QFrame()
@@ -2291,6 +2316,7 @@ class MainWindow(QMainWindow):
     def _set_credentials(self, credentials: list[Any]) -> None:
         self.credentials = [c.to_dict(redact=True) for c in credentials]
 
+    @safe_slot
     def refresh_all(self) -> None:
         self.load_credentials_and_overview()
 
@@ -2405,6 +2431,19 @@ class MainWindow(QMainWindow):
         self.on_device_action("preview", int(detail["id"]))
         dialog.show()
 
+    def overview_devices_by_id(self) -> dict[int, dict[str, Any]]:
+        """The dashboard's device rows, keyed by id.
+
+        The detail window can outlive the grid row that opened it, so device actions
+        answer from the current overview snapshot rather than from a stale widget.
+        """
+        return {
+            int(row["id"]): row
+            for row in (self.devices or [])
+            if row.get("id") is not None
+        }
+
+    @safe_slot
     def on_device_action(self, key: str, device_id: int) -> None:
         dialog = self.detail_dialog
 
@@ -2681,6 +2720,7 @@ class MainWindow(QMainWindow):
 
     # ── live signals ─────────────────────────────────────────────────────────────────
 
+    @safe_slot
     def on_event(self, event: Any) -> None:
         item = QListWidgetItem(f"[{event.severity[:4].upper()}] {event.message}")
         if event.severity == "critical":
@@ -2694,10 +2734,12 @@ class MainWindow(QMainWindow):
         if event.severity == "critical":
             self.status.showMessage(event.message, 10000)
 
+    @safe_slot
     def on_job(self, job: Any) -> None:
         """A deployment changed state — refresh the history table."""
         self.load_jobs()
 
+    @safe_slot
     def on_result(self, result: Any) -> None:
         """Update the affected card in place — no full refresh, no flicker."""
         card = self.cards.get(int(result.device_id)) if result.device_id else None

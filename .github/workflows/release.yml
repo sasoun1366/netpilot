@@ -38,6 +38,17 @@ jobs:
         run: |
           ./out/netpilot-*-windows-cli.exe --version
           ./out/netpilot-*-windows-cli.exe --data-dir ./smoke doctor || true
+      - name: Smoke-test the frozen desktop app
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # Launch it offscreen, let it settle, kill it, then prove the core came up:
+          # a packaged desktop app that cannot start is worse than no download at all.
+          timeout 30 ./out/netpilot-*-windows-desktop.exe || true
+          grep -q "core ready=True" "$USERPROFILE/.netpilot/netpilot.log"
+          echo "the desktop build started its core and wrote its log"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
