@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GUI](https://img.shields.io/badge/GUI-PyQt6-41cd52)](netpilot/desktop)
 [![Web](https://img.shields.io/badge/dashboard-FastAPI-009688)](netpilot/web)
+[![Telegram](https://img.shields.io/badge/Telegram-%40luyavaai-26A5E4?logo=telegram&logoColor=white)](https://t.me/luyavaai)
 
 **One inventory. Monitor it, and push configuration to it — from the same place.**
 
@@ -310,6 +311,11 @@ deleting it — so the flows users live in are covered end to end.
 - [ ] Authentication for the web dashboard
 - [ ] Per-device maintenance windows (suppress alerts during a planned change)
 - [ ] Config drift detection: alert when a device's running config diverges from its last backup
+
+## Stay updated
+
+New releases are announced on Telegram: **[@luyavaai](https://t.me/luyavaai)** — version
+notes, upgrade advice and practical MikroTik / network notes go there first.
 
 <!-- support:start -->
 ## Support the project
