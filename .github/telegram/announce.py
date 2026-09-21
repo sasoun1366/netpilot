@@ -34,6 +34,24 @@ MAX_BODY = 340  # characters of release notes to include
 # ── writing the post ────────────────────────────────────────────────────────────────
 
 
+def force_utf8_output() -> None:
+    """Print UTF-8 whatever the console thinks it is.
+
+    A Windows console defaults to a legacy code page (cp1252 and friends), so printing a
+    post full of emoji and Persian text raises UnicodeEncodeError — on a script whose
+    actual job (HTTP) never touched the console. Python 3.7+ lets a stream be
+    reconfigured; on anything older this is silently skipped.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - exotic stream
+            pass
+
+
 def esc(text: Any) -> str:
     """Escape for Telegram's HTML parse mode."""
     return html.escape(str(text or ""), quote=False)
@@ -277,6 +295,7 @@ def load_payload(path: str | None) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_output()
     parser = argparse.ArgumentParser(description="Post a release announcement to Telegram.")
     parser.add_argument(
         "--lang",

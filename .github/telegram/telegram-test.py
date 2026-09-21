@@ -13,6 +13,15 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+#: Windows consoles are not UTF-8 by default, and this script prints emoji and Persian.
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        try:
+            _reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # pragma: no cover
+            pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANNOUNCE = os.path.join(HERE, "announce.py")
 
@@ -41,15 +50,24 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def run(**env_overrides) -> subprocess.CompletedProcess:
+def child_env(**overrides) -> dict:
+    """Environment for a child: never a legacy code page, so its output is decodable."""
     env = dict(os.environ)
     env.pop("TELEGRAM_BOT_TOKEN", None)
     env.pop("TELEGRAM_CHAT_ID", None)
-    env.update({k: v for k, v in env_overrides.items() if v is not None})
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.update({k: v for k, v in overrides.items() if v is not None})
+    return env
+
+
+def run(**env_overrides) -> subprocess.CompletedProcess:
+    env = child_env(**env_overrides)
     return subprocess.run(
         [sys.executable, ANNOUNCE, "--lang", env.get("LANG_ARG", "both")],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         cwd=HERE,
         check=False,
@@ -133,7 +151,9 @@ def main() -> int:
         [sys.executable, ANNOUNCE, "--lang", "fa", "--dry-run", "--test-message", "سلام"],
         capture_output=True,
         text=True,
-        env={**os.environ, "TELEGRAM_API": api, "GITHUB_REPOSITORY": "sasoun1366/netpilot"},
+        encoding="utf-8",
+        errors="replace",
+        env=child_env(TELEGRAM_API=api, GITHUB_REPOSITORY="sasoun1366/netpilot"),
         check=False,
     )
     check("dry run exits 0", result.returncode == 0, result.stderr[-200:])
@@ -157,7 +177,9 @@ def main() -> int:
         ],
         capture_output=True,
         text=True,
-        env={**os.environ, "TELEGRAM_API": api, "GITHUB_REPOSITORY": "sasoun1366/netpilot"},
+        encoding="utf-8",
+        errors="replace",
+        env=child_env(TELEGRAM_API=api, GITHUB_REPOSITORY="sasoun1366/netpilot"),
         check=False,
     )
     check("a bilingual test post is sent", result.returncode == 0 and len(received) == 1, result.stderr[-200:])

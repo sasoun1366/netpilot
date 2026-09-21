@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -193,11 +194,55 @@ def test_no_release_in_the_event_is_a_quiet_no_op(tmp_path, capsys, monkeypatch)
 
 def test_the_end_to_end_self_test_passes():
     """The same script the workflow runs, against a local stand-in for the Bot API."""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(  # noqa: S603
         [sys.executable, str(SELFTEST)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
         timeout=180,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "all checks passed" in result.stdout
+
+
+def test_the_self_test_survives_a_legacy_console_encoding():
+    """Windows CI failed here: a cp1252 console cannot encode the post's emoji.
+
+    Simulated by handing the child PYTHONIOENCODING=cp1252 — the same code page a
+    Windows console uses. Both halves matter: the child must reconfigure its own
+    streams, and the parent must decode the child's output as UTF-8.
+    """
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(SELFTEST)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "all checks passed" in result.stdout
+
+
+def test_the_announcer_prints_utf8_whatever_the_console_is(tmp_path):
+    """A dry run on a Windows console must print the post, not a UnicodeEncodeError."""
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps(payload(body="Notes")), encoding="utf-8")
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(ANNOUNCE_PATH), "--lang", "both", "--dry-run",
+         "--event", str(event)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "🚀" in result.stdout
+    assert "منتشر شد" in result.stdout
