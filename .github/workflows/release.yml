@@ -89,3 +89,14 @@ jobs:
           draft: false
           prerelease: false
           files: out/*.exe
+      - name: Announce on Telegram
+        # A release created by a workflow with GITHUB_TOKEN does not trigger other
+        # workflows (GitHub's anti-recursion rule), so the announcement cannot rely on
+        # the `release: published` event for automated releases. It runs right here.
+        # With no secrets set this prints a warning and changes nothing.
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_LANG: ${{ vars.TELEGRAM_LANG || 'both' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/telegram/announce.py
